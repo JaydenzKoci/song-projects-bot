@@ -4,6 +4,7 @@ import re
 from collections import defaultdict
 import matplotlib.pyplot as plt
 import numpy as np
+import logging
 
 note_name_maps = {
     'PLASTIC GUITAR': { 127: "Trill Marker", 126: "Tremolo Marker", 116: "Overdrive", 103: "Solo Marker", 102: "EXPERT Force HOPO Off", 101: "EXPERT Force HOPO On", 100: "EXPERT Orange", 99: "EXPERT Blue", 98: "EXPERT Yellow", 97: "EXPERT Red", 96: "EXPERT Green", 90: "HARD Force HOPO Off", 89: "HARD Force HOPO On", 88: "HARD Orange", 87: "HARD Blue", 86: "HARD Yellow", 85: "HARD Red", 84: "HARD Green", 76: "MEDIUM Orange", 75: "MEDIUM Blue", 74: "MEDIUM Yellow", 73: "MEDIUM Red", 72: "MEDIUM Green", 64: "EASY Orange", 63: "EASY Blue", 62: "EASY Yellow", 61: "EASY Red", 60: "EASY Green" },
@@ -29,7 +30,7 @@ def load_midi_tracks(file_path):
     try:
         mid = mido.MidiFile(file_path)
     except Exception as e:
-        print(f"Error loading MIDI file {file_path}: {e}")
+        logging.error(f"Error loading MIDI file {file_path}: {e}")
         return None
     tracks = {track.name: track for track in mid.tracks if hasattr(track, 'name')}
     return tracks
@@ -153,8 +154,7 @@ def visualize_midi_changes(differences, text_differences, note_name_map, track_n
     plt.close()
     return image_path
 
-def run_comparison(midi_file1_path, midi_file2_path, session_id):
-    output_folder = os.path.join(os.path.dirname(__file__), 'out')
+def run_comparison(midi_file1_path, midi_file2_path, session_id, output_folder='out'):
     os.makedirs(output_folder, exist_ok=True)
 
     tracks1 = load_midi_tracks(midi_file1_path)
@@ -186,8 +186,8 @@ def run_comparison(midi_file1_path, midi_file2_path, session_id):
             image_path = visualize_midi_changes(note_diffs, text_diffs, note_map, track_name, output_folder, session_id)
             if image_path:
                 generated_results.append((track_name, image_path))
-                print(f"Differences found in '{track_name}'. Image saved to {image_path}")
+                logging.info(f"Differences found in '{track_name}'. Image saved to {image_path}")
         else:
-            print(f"'{track_name}' has no significant changes.")
+            logging.info(f"'{track_name}' has no significant changes.")
             
     return generated_results

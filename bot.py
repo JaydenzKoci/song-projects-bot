@@ -14,6 +14,12 @@ import os
 import random
 import uuid
 import compare_midi
+import subprocess
+import mido
+import requests
+import enum
+import hashlib
+import logging
 
 BOT_TOKEN = ""
 JSON_DATA_URL = "https://raw.githubusercontent.com/JaydenzKoci/jaydenzkoci.github.io/refs/heads/main/data/tracks.json"
@@ -25,9 +31,15 @@ SUGGESTIONS_FILE = "suggestions.json"
 CHANGELOG_FILE = "changelog.json"
 MIDI_CHANGES_FILE = "midichanges.json"
 
+LOCAL_MIDI_FOLDER = "midi_files/"
+TEMP_FOLDER = "out/"
+
 intents = discord.Intents.default()
 client = discord.Client(intents=intents)
 tree = app_commands.CommandTree(client)
+
+if not os.path.exists(LOCAL_MIDI_FOLDER): os.makedirs(LOCAL_MIDI_FOLDER)
+if not os.path.exists(TEMP_FOLDER): os.makedirs(TEMP_FOLDER)
 
 def load_json_file(filename: str, default_data: dict | list = None):
     if default_data is None:
@@ -45,6 +57,156 @@ def load_json_file(filename: str, default_data: dict | list = None):
 def save_json_file(filename: str, data: dict | list):
     with open(filename, 'w') as f:
         json.dump(data, f, indent=4)
+
+config = load_json_file(CONFIG_FILE)
+
+class Instrument:
+    def __init__(self, english:str = "Vocals", lb_code:str = "Solo_Vocals", plastic:bool = False, chopt:str = "vocals", midi:str = "PART VOCALS", replace:str = None, lb_enabled:bool = True, path_enabled: bool = True) -> None:
+        self.english = english
+        self.lb_code = lb_code
+        self.plastic = plastic
+        self.chopt = chopt
+        self.midi = midi
+        self.replace = replace
+        self.lb_enabled = lb_enabled
+        self.path_enabled = path_enabled
+
+class Difficulty:
+    def __init__(self, english:str = "Expert", chopt:str = "expert", pitch_ranges = [96, 100], diff_4k:bool = False) -> None:
+        self.english = english
+        self.chopt = chopt
+        self.pitch_ranges = pitch_ranges
+        self.diff_4k = diff_4k
+
+class Instruments(enum.Enum):
+    ProLead = Instrument(english="Pro Lead", lb_code="Solo_PeripheralGuitar", plastic=True, chopt="proguitar", midi="PLASTIC GUITAR", path_enabled=True)
+    ProBass = Instrument(english="Pro Bass", lb_code="Solo_PeripheralBass", plastic=True, chopt="probass", midi="PLASTIC BASS", path_enabled=True)
+    ProDrums = Instrument(english="Pro Drums", lb_code="Solo_PeripheralDrum", plastic=True, chopt="drums", midi="PLASTIC DRUMS", replace="PART DRUMS", lb_enabled=False, path_enabled=True)
+    ProVocals = Instrument(english="Pro Vocals", lb_code="Solo_PeripheralVocals", plastic=True, chopt="vocals", midi="PRO VOCALS", lb_enabled=False, path_enabled=False)
+    Bass = Instrument(english="Bass", lb_code="Solo_Bass", chopt="bass", midi="PART BASS", path_enabled=True)
+    Lead = Instrument(english="Lead", lb_code="Solo_Guitar", chopt="guitar", midi="PART GUITAR", path_enabled=True)
+    Drums = Instrument(english="Drums", lb_code="Solo_Drums", chopt="drums", midi="PART DRUMS", path_enabled=True)
+    Vocals = Instrument(english="Vocals", lb_code="Solo_Vocals", chopt="vocals", midi="PART VOCALS", path_enabled=False)
+
+class Difficulties(enum.Enum):
+    Expert = Difficulty()
+    Hard = Difficulty(english="Hard", chopt="hard", pitch_ranges=[84, 88], diff_4k=True)
+    Medium = Difficulty(english="Medium", chopt="medium", pitch_ranges=[72, 76], diff_4k=True)
+    Easy = Difficulty(english="Easy", chopt="easy", pitch_ranges=[60, 64], diff_4k=True)
+
+class MidiArchiveTools:
+    def __init__(self) -> None:
+        pass
+    
+    def save_chart(self, chart_url:str) -> str:
+        # Generate a filename from the URL
+        fname = chart_url.split('/')[-1]
+        if '.' in fname:
+             # Use the part before the extension
+            base_name = fname.rsplit('.', 1)[0]
+        else:
+            base_name = fname
+        
+        midiname = f"{base_name}.mid"
+        local_path = os.path.join(LOCAL_MIDI_FOLDER, midiname)
+
+        if os.path.exists(local_path):
+            logging.info(f"File {chart_url} already exists, using local copy.")
+            return local_path
+        else:
+            logging.debug(f'[GET] {chart_url}')
+            response = requests.get(chart_url)
+            response.raise_for_status()
+
+            with open(local_path, 'wb') as f:
+                f.write(response.content)
+
+            return local_path
+        
+    def modify_midi_file(self, midi_file: str, instrument: Instrument, session_hash: str, shortname: str) -> str:
+        mid = mido.MidiFile(midi_file)
+        track_names_to_delete = []
+        track_names_to_rename = {}
+
+        if instrument.replace:
+            track_names_to_delete.append(instrument.replace)
+        track_names_to_rename[instrument.midi] = instrument.replace
+
+        new_tracks = []
+        for track in mid.tracks:
+            if track.name in track_names_to_delete:
+                continue
+            
+            modified_track = mido.MidiTrack()
+            for msg in track:
+                if msg.type == 'track_name' and msg.name in track_names_to_rename:
+                    msg.name = track_names_to_rename[msg.name]
+                modified_track.append(msg)
+            new_tracks.append(modified_track)
+
+        mid.tracks = new_tracks
+        
+        modified_midi_file_name = f"{shortname}_{session_hash}.mid"
+        modified_midi_file = os.path.join(TEMP_FOLDER, modified_midi_file_name)
+
+        mid.save(modified_midi_file)
+        return modified_midi_file
+
+def run_chopt(midi_file: str, command_instrument: str, output_image: str, squeeze_percent: int = 20, instrument: Instrument = None, difficulty: str = 'expert', extra_args: list = []):
+    engine = 'fnf'
+    if instrument.midi == 'PLASTIC DRUMS':
+        engine = 'ch' 
+
+    chopt_command = [
+        'chopt.exe', 
+        '-f', midi_file, 
+        '--engine', engine, 
+        '--squeeze', str(squeeze_percent),
+        '--early-whammy', '0',
+        '--diff', difficulty
+    ]
+
+    if instrument.midi != 'PLASTIC DRUMS':
+        chopt_command.append('--no-pro-drums')
+
+    chopt_command.extend(['-i', command_instrument, '-o', os.path.join(TEMP_FOLDER, output_image)])
+    chopt_command.extend(extra_args)
+
+    result = subprocess.run(chopt_command, text=True, capture_output=True)
+
+    if result.returncode != 0:
+        raise Exception("CHOpt Error: " + result.stderr)
+
+    return result.stdout.strip()
+
+def process_acts(arr):
+    sum_phrases, sum_overlaps = 0, 0
+    for string in arr:
+        try:
+            if "(" in string:
+                x, y = string.split("(")
+                y = y.replace(")", "")
+                sum_phrases += int(x)
+                sum_overlaps += int(y)
+            else:
+                sum_phrases += int(string)
+        except Exception:
+            pass
+    return sum_phrases, sum_overlaps
+
+def generate_session_hash(user_id, song_name):
+    hash_int = int(hashlib.md5(f"{user_id}_{song_name}".encode()).hexdigest(), 16)
+    return str(hash_int % 10**8).zfill(8)
+
+def delete_session_files(session_hash):
+    try:
+        for file_name in os.listdir(TEMP_FOLDER):
+            if session_hash in file_name:
+                file_path = os.path.join(TEMP_FOLDER, file_name)
+                os.remove(file_path)
+                logging.info(f"Deleted file: {file_path}")
+    except Exception as e:
+        logging.error(f"Error while cleaning up files for session {session_hash}", exc_info=e)
 
 async def log_error_to_channel(error_message: str):
     config = load_json_file(CONFIG_FILE)
@@ -360,7 +522,7 @@ class TrackInfoView(discord.ui.View):
 
     class PreviewAudioButton(discord.ui.Button):
         def __init__(self, track: dict):
-            super().__init__(label="Preview Audio", style=discord.ButtonStyle.green, row=0, emoji='🎵')
+            super().__init__(label="Preview Audio", style=discord.ButtonStyle.green, row=0, emoji='�')
             self.track = track
 
         async def callback(self, interaction: discord.Interaction):
@@ -407,9 +569,10 @@ class TrackInfoView(discord.ui.View):
                 await log_error_to_channel(f"Error in instrument video button: {str(e)}")
 
 class TrackSelectDropdown(discord.ui.Select):
-    def __init__(self, tracks: list, command_type: str, sort: str = None):
+    def __init__(self, tracks: list, command_type: str, sort: str = None, command_args: dict = None):
         self.tracks_map = {t['id']: t for t in tracks[:25]}
         options, sort_lower = [], sort.lower() if sort else ''
+        self.command_args = command_args or {}
 
         for t in self.tracks_map.values():
             desc = t.get('artist', 'N/A')
@@ -433,6 +596,9 @@ class TrackSelectDropdown(discord.ui.Select):
             track = self.tracks_map.get(self.values[0])
             if not track: return
             
+            if self.command_type == 'path':
+                await interaction.response.defer()
+
             self.view.stop()
             if self.command_type == 'info':
                 embed, view = create_track_embed_and_view(track, interaction.user.id)
@@ -440,15 +606,26 @@ class TrackSelectDropdown(discord.ui.Select):
             elif self.command_type == 'history':
                 view = HistoryPaginatorView(track, author_id=interaction.user.id)
                 await interaction.response.edit_message(content=None, embed=view.create_embed(), view=view)
+            elif self.command_type == 'path':
+                content, embed, attachments, error = await generate_path_response(
+                    user_id=interaction.user.id,
+                    song_data=track,
+                    **self.command_args
+                )
+                await interaction.edit_original_response(content=content, embed=embed, attachments=attachments or [], view=None)
+
         except Exception as e:
             await log_error_to_channel(f"Error in track select dropdown: {str(e)}")
-            await interaction.response.send_message("An error occurred during selection.", ephemeral=True)
+            try:
+                await interaction.followup.send("An error occurred during selection.", ephemeral=True)
+            except discord.errors.InteractionResponded:
+                pass
 
 class TrackSelectionView(discord.ui.View):
-    def __init__(self, tracks: list, author_id: int, command_type: str, sort: str = None):
+    def __init__(self, tracks: list, author_id: int, command_type: str, sort: str = None, command_args: dict = None):
         super().__init__(timeout=60.0)
         self.author_id = author_id
-        self.add_item(TrackSelectDropdown(tracks, command_type, sort))
+        self.add_item(TrackSelectDropdown(tracks, command_type, sort, command_args))
         self.message: discord.InteractionMessage = None
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
@@ -527,6 +704,7 @@ class HistoryPaginatorView(discord.ui.View):
     async def next_button(self, i: discord.Interaction, b: discord.ui.Button):
         if self.current_page < self.total_pages - 1: self.current_page += 1; await self.update_message(i)
 
+# --- TASKS ---
 @tasks.loop(seconds=10)
 async def check_for_updates():
     try:
@@ -592,7 +770,7 @@ async def check_for_updates():
                                         f1.write(await r1.read())
                                         f2.write(await r2.read())
                                     
-                                    comparison_results = compare_midi.run_comparison(old_path, new_path, session_id)
+                                    comparison_results = compare_midi.run_comparison(old_path, new_path, session_id, output_folder=temp_dir)
                                     midi_change_log_entry = []
                                     for comp_track_name, image_path in comparison_results:
                                         
@@ -680,6 +858,110 @@ async def track_autocomplete(interaction: discord.Interaction, current: str) -> 
         await log_error_to_channel(f"Error in track_autocomplete: {str(e)}")
         return []
 
+async def generate_path_response(user_id: int, song_data: dict, instrument: Instruments, difficulty: Difficulties, squeeze_percent: int, lefty_flip: bool, activation_opacity: int, no_bpms: bool, no_solos: bool, no_time_signatures: bool) -> tuple:
+    """
+    Generates the path image and response data.
+    Returns a tuple of: (content, embed, attachments, error_string)
+    """
+    chosen_instrument = instrument.value
+    chosen_diff = difficulty.value
+    midi_tool = MidiArchiveTools()
+
+    if not chosen_instrument.path_enabled:
+        error_msg = f"Paths are not supported for {chosen_instrument.english}."
+        return (error_msg, None, None, error_msg)
+
+    extra_arguments = []
+    field_argument_descriptors = []
+    if lefty_flip:
+        extra_arguments.append('--lefty-flip')
+        field_argument_descriptors.append('**Lefty Flip:** Yes')
+    if activation_opacity is not None:
+        extra_arguments.extend(['--act-opacity', str(activation_opacity / 100)])
+        field_argument_descriptors.append(f'**Activation Opacity:** {activation_opacity}%')
+    if no_bpms:
+        extra_arguments.append('--no-bpms')
+        field_argument_descriptors.append('**No BPMs:** Yes')
+    if no_solos:
+        extra_arguments.append('--no-solos')
+        field_argument_descriptors.append('**No Solos:** Yes')
+    if no_time_signatures:
+        extra_arguments.append('--no-time-sigs')
+        field_argument_descriptors.append('**No Time Signatures:** Yes')
+
+    session_hash = generate_session_hash(user_id, song_data['id'])
+
+    try:
+        chart_url = song_data.get('charturl')
+        if not chart_url:
+            error_msg = "This track does not have a chart URL."
+            return (error_msg, None, None, error_msg)
+
+        midi_file = midi_tool.save_chart(chart_url)
+
+        if chosen_instrument.replace:
+            modified_midi_file = midi_tool.modify_midi_file(midi_file, chosen_instrument, session_hash, song_data['id'])
+            if not modified_midi_file:
+                error_msg = f"Failed to modify MIDI for '{instrument.name}'."
+                return (error_msg, None, None, error_msg)
+            midi_file = modified_midi_file
+
+        output_image = f"{song_data['id']}_{chosen_instrument.chopt.lower()}_path_{session_hash}.png"
+        chopt_output = run_chopt(midi_file, chosen_instrument.chopt, output_image, squeeze_percent, instrument=chosen_instrument, difficulty=chosen_diff.chopt, extra_args=extra_arguments)
+
+        filtered_output = '\n'.join([line for line in chopt_output.splitlines() if "Optimising, please wait..." not in line])
+
+        description = (
+            f"**Instrument:** {chosen_instrument.english}\n"
+            f"**Difficulty:** {chosen_diff.english}\n"
+            f"**Squeeze:** {squeeze_percent}%\n"
+        )
+        description += '\n'.join(field_argument_descriptors)
+
+        output_path = os.path.join(TEMP_FOLDER, output_image)
+        if os.path.exists(output_path):
+            file = discord.File(output_path, filename=output_image)
+            embed = discord.Embed(
+                title=f"Overdrive Path for **{song_data['title']}** - *{song_data['artist']}*",
+                description=description,
+                color=discord.Color.purple()
+            )
+            embed.add_field(name="Overdrive Path", value=f"```\n{filtered_output}\n```", inline=False)
+
+            acts = filtered_output.split('\n')[0].replace('Path: ', '').split('-')
+            total_acts = len(acts)
+            phrases, overlaps = process_acts(acts)
+
+            no_sp_score = filtered_output.split('\n')[1].split(' ').pop()
+            total_score = filtered_output.split('\n')[2].split(' ').pop()
+
+            embed.add_field(name="Phrases", value=phrases)
+            embed.add_field(name="Activations", value=total_acts)
+            embed.add_field(name="Overlaps", value=overlaps)
+            embed.add_field(name="No OD Score", value=no_sp_score)
+            embed.add_field(name="Total Score", value=total_score)
+            embed.set_footer(text="Encore Bot")
+
+            embed.set_image(url=f"attachment://{output_image}")
+            if cover_url := song_data.get('cover'):
+                embed.set_thumbnail(url=f"{ASSET_BASE_URL}/assets/covers/{cover_url}")
+
+            return (None, embed, [file], None)
+        else:
+            error_msg = f"Failed to generate the path image for '{song_data['title']}'."
+            return (error_msg, None, None, error_msg)
+
+    except FileNotFoundError:
+        error_msg = "Error: `chopt.exe` not found. Please ensure the executable is in the bot's root directory or in your system's PATH."
+        await log_error_to_channel(error_msg)
+        return (error_msg, None, None, error_msg)
+    except Exception as e:
+        error_msg = f"An error occurred: {e}"
+        await log_error_to_channel(f"Error in path command: {e}")
+        return (error_msg, None, None, error_msg)
+    finally:
+        delete_session_files(session_hash)
+
 @tree.command(name="trackinfo", description="Get detailed information about a specific track.")
 @app_commands.autocomplete(track_name=track_autocomplete)
 @app_commands.describe(track_name="Search by title, artist, or ID.")
@@ -748,6 +1030,55 @@ async def trackhistory(interaction: discord.Interaction, track_name: str):
     except Exception as e:
         await log_error_to_channel(f"Error in trackhistory command: {str(e)}")
         await interaction.followup.send("An error occurred while processing your request.", ephemeral=True)
+
+
+@tree.command(name="path", description="Generates a path image for a song's chart.")
+@app_commands.autocomplete(song_name=track_autocomplete)
+@app_commands.describe(
+    song_name="The name of the song.",
+    instrument="The instrument to generate the path for.",
+    difficulty="The difficulty of the chart.",
+    squeeze_percent="The percentage to squeeze the chart image horizontally.",
+    lefty_flip="Flip the chart for left-handed players.",
+    activation_opacity="Set the opacity of activation lanes (0-100).",
+    no_bpms="Hide BPM markers on the chart.",
+    no_solos="Hide solo markers on the chart.",
+    no_time_signatures="Hide time signature markers on the chart."
+)
+async def path(interaction: discord.Interaction, 
+             song_name: str, 
+             instrument: Instruments, 
+             difficulty: Difficulties = Difficulties.Expert,
+             squeeze_percent: app_commands.Range[int, 0, 100] = 20,
+             lefty_flip: bool = False,
+             activation_opacity: app_commands.Range[int, 0, 100] = None,
+             no_bpms: bool = False,
+             no_solos: bool = False,
+             no_time_signatures: bool = False):
+    await interaction.response.defer()
+
+    matched_tracks = fuzzy_search_tracks(get_cached_track_data(), song_name)
+    if not matched_tracks:
+        await interaction.followup.send(f"Sorry, no tracks were found matching your query: '{song_name}'")
+        return
+
+    command_args = {
+        "instrument": instrument, "difficulty": difficulty, "squeeze_percent": squeeze_percent,
+        "lefty_flip": lefty_flip, "activation_opacity": activation_opacity, "no_bpms": no_bpms,
+        "no_solos": no_solos, "no_time_signatures": no_time_signatures
+    }
+
+    if len(matched_tracks) == 1:
+        content, embed, attachments, error = await generate_path_response(
+            user_id=interaction.user.id,
+            song_data=matched_tracks[0],
+            **command_args
+        )
+        await interaction.edit_original_response(content=content, embed=embed, attachments=attachments or [], view=None)
+    else:
+        view = TrackSelectionView(matched_tracks, interaction.user.id, 'path', command_args=command_args)
+        view.message = await interaction.followup.send(f"Found {len(matched_tracks)} results. Please select one:", view=view)
+
 
 class SuggestionModal(discord.ui.Modal, title="Suggest a Feature"):
     suggestion_input = discord.ui.TextInput(label="Your Suggestion", style=discord.TextStyle.long, 
@@ -885,7 +1216,7 @@ async def testchartvisualization(interaction: discord.Interaction, track_name: s
                     f1.write(await r1.read())
                     f2.write(await r2.read())
                 
-                comparison_results = compare_midi.run_comparison(old_path, new_path, session_id)
+                comparison_results = compare_midi.run_comparison(old_path, new_path, session_id, output_folder=temp_dir)
                 if comparison_results:
                     await interaction.followup.send("MIDI comparison results:")
                     for comp_track_name, image_path in comparison_results:
