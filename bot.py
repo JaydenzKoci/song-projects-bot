@@ -21,6 +21,12 @@ import enum
 import hashlib
 import logging
 
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s %(levelname)-8s %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+
 BOT_TOKEN = ""
 JSON_DATA_URL = "https://raw.githubusercontent.com/JaydenzKoci/jaydenzkoci.github.io/refs/heads/main/data/tracks.json"
 ASSET_BASE_URL = "https://jaydenzkoci.github.io"
@@ -40,6 +46,7 @@ tree = app_commands.CommandTree(client)
 
 if not os.path.exists(LOCAL_MIDI_FOLDER): os.makedirs(LOCAL_MIDI_FOLDER)
 if not os.path.exists(TEMP_FOLDER): os.makedirs(TEMP_FOLDER)
+
 
 def load_json_file(filename: str, default_data: dict | list = None):
     if default_data is None:
@@ -98,29 +105,22 @@ class MidiArchiveTools:
     def __init__(self) -> None:
         pass
     
-    def save_chart(self, chart_url:str) -> str:
-        # Generate a filename from the URL
-        fname = chart_url.split('/')[-1]
-        if '.' in fname:
-             # Use the part before the extension
-            base_name = fname.rsplit('.', 1)[0]
-        else:
-            base_name = fname
-        
-        midiname = f"{base_name}.mid"
+    def save_chart(self, chart_url:str, song_id: str) -> str:
+        midiname = f"{song_id}.mid"
         local_path = os.path.join(LOCAL_MIDI_FOLDER, midiname)
 
         if os.path.exists(local_path):
-            logging.info(f"File {chart_url} already exists, using local copy.")
+            logging.info(f"Chart for song ID '{song_id}' already exists, using local copy.")
             return local_path
         else:
-            logging.debug(f'[GET] {chart_url}')
+            logging.info(f"Downloading chart for song ID '{song_id}' from {chart_url}")
             response = requests.get(chart_url)
             response.raise_for_status()
 
             with open(local_path, 'wb') as f:
                 f.write(response.content)
-
+            
+            logging.info(f"Successfully saved chart for '{song_id}' to {local_path}")
             return local_path
         
     def modify_midi_file(self, midi_file: str, instrument: Instrument, session_hash: str, shortname: str) -> str:
@@ -175,7 +175,7 @@ def run_chopt(midi_file: str, command_instrument: str, output_image: str, squeez
     result = subprocess.run(chopt_command, text=True, capture_output=True)
 
     if result.returncode != 0:
-        raise Exception("CHOpt Error: " + result.stderr)
+        raise Exception(result.stderr)
 
     return result.stdout.strip()
 
@@ -209,6 +209,7 @@ def delete_session_files(session_hash):
         logging.error(f"Error while cleaning up files for session {session_hash}", exc_info=e)
 
 async def log_error_to_channel(error_message: str):
+    logging.error(error_message)
     config = load_json_file(CONFIG_FILE)
     error_channel_id = config.get('error_log_channels', {}).get('default')
     if error_channel_id:
@@ -223,9 +224,9 @@ async def log_error_to_channel(error_message: str):
                 )
                 await channel.send(embed=embed)
             except discord.Forbidden:
-                print(f"Failed to send error log to channel {error_channel_id}: Missing permissions.")
+                logging.error(f"Failed to send error log to channel {error_channel_id}: Missing permissions.")
             except Exception as e:
-                print(f"Failed to send error log message: {e}")
+                logging.error(f"Failed to send error log message: {e}")
 
 async def update_bot_status():
     try:
@@ -233,12 +234,12 @@ async def update_bot_status():
         track_count = len(tracks)
         activity = discord.Activity(type=discord.ActivityType.playing, name=f"{track_count} Tracks")
         await client.change_presence(activity=activity)
-        print(f"Updated bot status: Playing {track_count} Tracks")
+        logging.info(f"Updated bot status: Playing {track_count} Tracks")
     except Exception as e:
         await log_error_to_channel(f"Error updating bot status: {str(e)}")
 
 async def get_live_track_data() -> list | None:
-    print("Attempting to fetch live track data from source...")
+    logging.info("Attempting to fetch live track data from source...")
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(JSON_DATA_URL, timeout=10) as response:
@@ -253,7 +254,7 @@ async def get_live_track_data() -> list | None:
                         await log_error_to_channel(f"Error: JSON data is not in the expected format (dictionary of tracks). Got type: {type(data)}")
                         return None
                     
-                    print(f"Successfully fetched {len(tracks_list)} live tracks.")
+                    logging.info(f"Successfully fetched {len(tracks_list)} live tracks.")
                     return tracks_list
                 else:
                     await log_error_to_channel(f"Failed to fetch live data. Status code: {response.status}")
@@ -522,7 +523,7 @@ class TrackInfoView(discord.ui.View):
 
     class PreviewAudioButton(discord.ui.Button):
         def __init__(self, track: dict):
-            super().__init__(label="Preview Audio", style=discord.ButtonStyle.green, row=0, emoji='�')
+            super().__init__(label="Preview Audio", style=discord.ButtonStyle.green, row=0, emoji='🎵')
             self.track = track
 
         async def callback(self, interaction: discord.Interaction):
@@ -704,17 +705,16 @@ class HistoryPaginatorView(discord.ui.View):
     async def next_button(self, i: discord.Interaction, b: discord.ui.Button):
         if self.current_page < self.total_pages - 1: self.current_page += 1; await self.update_message(i)
 
-# --- TASKS ---
 @tasks.loop(seconds=10)
 async def check_for_updates():
     try:
         config = load_json_file(CONFIG_FILE)
         if not (log_channels := config.get('update_log_channels', {})): return
 
-        print("Checking for track updates...")
+        logging.info("Checking for track updates...")
         live_tracks = await get_live_track_data()
         if live_tracks is None:
-            print("Update check failed: Could not fetch live data."); return
+            logging.warning("Update check failed: Could not fetch live data."); return
 
         cached_tracks = get_cached_track_data()
         
@@ -728,9 +728,9 @@ async def check_for_updates():
                            if old_tracks_by_id[t_id] != new_tracks_by_id[t_id]]
 
         if not (added_ids or removed_ids or modified_tracks):
-            print("No track updates found."); return
+            logging.info("No track updates found."); return
 
-        print("Changes detected! Processing logs and history.")
+        logging.info(f"Changes detected! Added: {len(added_ids)}, Removed: {len(removed_ids)}, Modified: {len(modified_tracks)}. Processing...")
         history_data = load_json_file(TRACK_HISTORY_FILE, {})
         midi_changes_data = load_json_file(MIDI_CHANGES_FILE, {})
         
@@ -750,12 +750,14 @@ async def check_for_updates():
                 current_update_timestamp = datetime.now().isoformat()
                 embed, changes = create_update_log_embed(mod_info['old'], mod_info['new'])
                 if embed:
+                    logging.info(f"Logging modification for track: {mod_info['new']['id']}")
                     await channel.send(embed=embed)
                     history_data.setdefault(mod_info['new']['id'], []).insert(0, {'timestamp': current_update_timestamp, 'changes': changes})
 
                 old_url = mod_info['old'].get('charturl')
                 new_url = mod_info['new'].get('charturl')
                 if old_url and new_url and old_url != new_url:
+                    logging.info(f"Chart URL changed for {mod_info['new']['id']}. Comparing MIDI files.")
                     session_id = str(uuid.uuid4())
                     temp_dir = 'temp_midi'
                     os.makedirs(temp_dir, exist_ok=True)
@@ -823,25 +825,25 @@ async def check_for_updates():
 @client.event
 async def on_ready():
     try:
-        print("Starting on_ready event...")
+        logging.info("Starting on_ready event...")
         live_tracks = await get_live_track_data()
-        print(f"Live tracks fetched: {len(live_tracks or [])}")
+        logging.info(f"Live tracks fetched: {len(live_tracks or [])}")
         if live_tracks is not None:
             save_json_file(TRACK_CACHE_FILE, {"tracks": live_tracks})
         
-        print(f"Bot logged in as {client.user} (ID: {client.user.id})")
-        print(f"Found {len(client.guilds)} guilds: {[guild.name + ' (' + str(guild.id) + ')' for guild in client.guilds]}")
+        logging.info(f"Bot logged in as {client.user} (ID: {client.user.id})")
+        logging.info(f"Found {len(client.guilds)} guilds: {[guild.name + ' (' + str(guild.id) + ')' for guild in client.guilds]}")
         
-        print("Attempting to sync commands globally...")
+        logging.info("Attempting to sync commands globally...")
         try:
             await tree.sync()
-            print("Global command sync successful.")
+            logging.info("Global command sync successful.")
         except Exception as e:
             await log_error_to_channel(f"Global command sync failed: {str(e)}")
 
         await update_bot_status()
         check_for_updates.start()
-        print("Bot is ready.")
+        logging.info("Bot is ready.")
     except Exception as e:
         await log_error_to_channel(f"Error in on_ready event: {str(e)}")
         raise
@@ -897,7 +899,7 @@ async def generate_path_response(user_id: int, song_data: dict, instrument: Inst
             error_msg = "This track does not have a chart URL."
             return (error_msg, None, None, error_msg)
 
-        midi_file = midi_tool.save_chart(chart_url)
+        midi_file = midi_tool.save_chart(chart_url, song_data['id'])
 
         if chosen_instrument.replace:
             modified_midi_file = midi_tool.modify_midi_file(midi_file, chosen_instrument, session_hash, song_data['id'])
@@ -1074,7 +1076,7 @@ async def path(interaction: discord.Interaction,
             song_data=matched_tracks[0],
             **command_args
         )
-        await interaction.edit_original_response(content=content, embed=embed, attachments=attachments or [], view=None)
+        await interaction.followup.send(content=content, embed=embed, files=attachments or [])
     else:
         view = TrackSelectionView(matched_tracks, interaction.user.id, 'path', command_args=command_args)
         view.message = await interaction.followup.send(f"Found {len(matched_tracks)} results. Please select one:", view=view)
@@ -1253,7 +1255,9 @@ if __name__ == "__main__":
         client.run(BOT_TOKEN)
     except discord.errors.LoginFailure:
         msg = "Login failed. Check your bot token and intents."
-        print(msg); asyncio.run(log_error_to_channel(msg))
+        logging.critical(msg)
+        asyncio.run(log_error_to_channel(msg))
     except Exception as e:
-        msg = f"An error occurred while running the bot: {e}"
-        print(msg); asyncio.run(log_error_to_channel(msg))
+        msg = f"An critical error occurred while running the bot: {e}"
+        logging.critical(msg)
+        asyncio.run(log_error_to_channel(msg))
