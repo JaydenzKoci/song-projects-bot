@@ -40,6 +40,67 @@ MIDI_CHANGES_FILE = "midichanges.json"
 LOCAL_MIDI_FOLDER = "midi_files/"
 TEMP_FOLDER = "out/"
 
+KEY_NAME_MAP = {
+    "album": "Album",
+    "artist": "Artist",
+    "ageRating": "Age Rating",
+    "bpm": "BPM",
+    "glowTimes": "Modal | Loading Phrase Glow Times",
+    "videoPosition": "Modal | Video Position",
+    "previewTime": "Audio Preview Start Time",
+    "previewEndTime": "Audio Preview End Time",
+    "previewUrl": "Audio Preview URL",
+    "charter": "Charter",
+    "coverArist": "Cover | Artist",
+    "createdAt": "Creation Date",
+    "download": "Download",
+    "doubleBass": "Double Bass",
+    "duration": "Duration",
+    "genre": "Genre",
+    "is_cover": "Is Cover",
+    "is_verified": "Is Verified",
+    "key": "Key",
+    "loading_phrase": "Loading Phrase",
+    "newYear": "Cover | Release Year",
+    "preview_time": "Preview Start Time",
+    "preview_end_time": "Preview End Time",
+    "proVoxHarmonies": "Pro Vox Harmonies",
+    "releaseYear": "Release Year",
+    "songlink": "Song Link",
+    "spotify": "Song Link ID",
+    "source": "Source",
+    "charturl": "Chart URL",
+    "title": "Title",
+    "videoUrl": "Video URL",
+    "rotated": "WIP Track",
+    "new": "Playable Track",
+    "featured": "Updated Track",
+    "finish": "Finished Track",
+    "youtubeLinks.vocals": "Vocals Video",
+    "youtubeLinks.drums": "Drums Video",
+    "youtubeLinks.bass": "Bass Video",
+    "youtubeLinks.lead": "Lead Video",
+    "lastFeatured": "Last Updated",
+    "rating": "Rating",
+    "complete": "Progress",
+    "id": "Shortname",
+    "difficulties.vocals": "Vocals Difficulty",
+    "difficulties.lead": "Lead Difficulty",
+    "difficulties.rhythm": "Rhythm Difficulty",
+    "difficulties.bass": "Bass Difficulty",
+    "difficulties.drums": "Drums Difficulty",
+    "difficulties.keys": "Keys Difficulty",
+    "difficulties.pro-vocals": "Pro Vocals Difficulty",
+    "difficulties.plastic-guitar": "Pro Lead Difficulty",
+    "difficulties.plastic-rhythm": "Pro Rhythm Difficulty",
+    "difficulties.plastic-bass": "Pro Bass Difficulty",
+    "difficulties.plastic-drums": "Pro Drums Difficulty",
+    "difficulties.plastic-keys": "Pro Keys Difficulty",
+    "difficulties.real-guitar": "Real Guitar Difficulty",
+    "difficulties.real-keys": "Real Keys Difficulty",
+    "difficulties.real-bass": "Real Bass Difficulty",
+    "difficulties.real-drums": "Real Drums Difficulty"
+}
 intents = discord.Intents.default()
 client = discord.Client(intents=intents)
 tree = app_commands.CommandTree(client)
@@ -483,7 +544,7 @@ def create_update_log_embed(old_track: dict, new_track: dict) -> tuple[discord.E
             
             old_val, new_val = flat_old.get(key), flat_new.get(key)
             if old_val != new_val:
-                key_title = "Chart URL" if key == 'charturl' else key.replace('.', ' ').title()
+                key_title = KEY_NAME_MAP.get(key, key.replace('.', ' ').title())
                 changes_dict[key] = {'old': old_val, 'new': new_val}
                 change_strings.append(f"**{key_title}**\n```\nOld: {old_val or 'N/A'}\nNew: {new_val or 'N/A'}\n```")
         
@@ -559,7 +620,7 @@ class TrackInfoView(discord.ui.View):
 
     class InstrumentVideoButton(discord.ui.Button):
         def __init__(self, part_name: str, link: str):
-            emoji_map = {'Vocals': '🎤', 'Lead': '🎸', 'Drums': '🥁', 'Bass': ''}
+            emoji_map = {'Vocals': '🎤', 'Lead': '🎸', 'Drums': '🥁', 'Bass': '🎸'}
             super().__init__(label=f"{part_name} Video", row=2, emoji=emoji_map.get(part_name))
             self.link, self.part_name = link, part_name
         
@@ -676,7 +737,7 @@ class HistoryPaginatorView(discord.ui.View):
                 ts = int(datetime.fromisoformat(entry['timestamp']).timestamp())
                 desc += f"**<t:{ts}:F>**\n"
                 for key, values in entry['changes'].items():
-                    key_title = "Chart URL" if key == 'charturl' else key.replace('.', ' ').title()
+                    key_title = KEY_NAME_MAP.get(key, key.replace('.', ' ').title())
                     desc += f"• **{key_title}**: `{values['old'] or 'N/A'}` → `{values['new'] or 'N/A'}`\n"
                 
                 entry_timestamp = entry['timestamp']
@@ -772,7 +833,12 @@ async def check_for_updates():
                                         f1.write(await r1.read())
                                         f2.write(await r2.read())
                                     
-                                    comparison_results = compare_midi.run_comparison(old_path, new_path, session_id, output_folder=temp_dir)
+                                    format = mod_info['new'].get('format', 'json')
+                                    comparison_results = compare_midi.run_comparison(
+                                        old_path, new_path, session_id, 
+                                        output_folder=temp_dir, 
+                                        format=format
+                                    )
                                     midi_change_log_entry = []
                                     for comp_track_name, image_path in comparison_results:
                                         
@@ -848,6 +914,7 @@ async def on_ready():
         await log_error_to_channel(f"Error in on_ready event: {str(e)}")
         raise
 
+# --- AUTOCOMPLETE ---
 async def track_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
     try:
         choices = []
@@ -1187,8 +1254,17 @@ async def setlogchannel(interaction: discord.Interaction):
 @tree.command(name="testchartvisualization", description="Tests the MIDI chart visualization.")
 @app_commands.default_permissions(administrator=True)
 @app_commands.autocomplete(track_name=track_autocomplete)
-@app_commands.describe(track_name="The name of the track to fetch cover art from.", old_midi_url="URL of the old MIDI file.", new_midi_url="URL of the new MIDI file.")
-async def testchartvisualization(interaction: discord.Interaction, track_name: str, old_midi_url: str, new_midi_url: str):
+@app_commands.describe(
+    track_name="The name of the track to fetch cover art from.",
+    old_midi_url="URL of the old MIDI file.",
+    new_midi_url="URL of the new MIDI file.",
+    format="The format of the chart to determine which tracks to scan."
+)
+@app_commands.choices(format=[
+    app_commands.Choice(name="JSON (Default)", value="json"),
+    app_commands.Choice(name="INI", value="ini")
+])
+async def testchartvisualization(interaction: discord.Interaction, track_name: str, old_midi_url: str, new_midi_url: str, format: app_commands.Choice[str] = None):
     await interaction.response.defer()
     
     matched_tracks = fuzzy_search_tracks(get_cached_track_data(), track_name)
@@ -1218,9 +1294,15 @@ async def testchartvisualization(interaction: discord.Interaction, track_name: s
                     f1.write(await r1.read())
                     f2.write(await r2.read())
                 
-                comparison_results = compare_midi.run_comparison(old_path, new_path, session_id, output_folder=temp_dir)
+                test_format = format.value if format else 'json'
+                comparison_results = compare_midi.run_comparison(
+                    old_path, new_path, session_id, 
+                    output_folder=temp_dir, 
+                    format=test_format
+                )
+
                 if comparison_results:
-                    await interaction.followup.send("MIDI comparison results:")
+                    await interaction.followup.send(f"MIDI comparison results (Format: **{test_format.upper()}**):")
                     for comp_track_name, image_path in comparison_results:
                         image_paths_to_clean.append(image_path)
                         

@@ -21,11 +21,6 @@ note_name_maps = {
 TIME_WINDOW = 10
 TIME_THRESHOLD = 10
 
-TRACKS_TO_COMPARE = [
-    'PART BASS', 'PART GUITAR', 'PART DRUMS', 'PART VOCALS', "PRO VOCALS", 
-    "PLASTIC GUITAR", "PLASTIC DRUMS", "PLASTIC BASS", 'BEAT', 'EVENTS', 'SECTION'
-]
-
 def load_midi_tracks(file_path):
     try:
         mid = mido.MidiFile(file_path)
@@ -154,7 +149,7 @@ def visualize_midi_changes(differences, text_differences, note_name_map, track_n
     plt.close()
     return image_path
 
-def run_comparison(midi_file1_path, midi_file2_path, session_id, output_folder='out'):
+def run_comparison(midi_file1_path, midi_file2_path, session_id, output_folder='out', format="json"):
     os.makedirs(output_folder, exist_ok=True)
 
     tracks1 = load_midi_tracks(midi_file1_path)
@@ -163,14 +158,26 @@ def run_comparison(midi_file1_path, midi_file2_path, session_id, output_folder='
     if not tracks2: return []
         
     generated_results = []
+    
+    if format == "ini":
+        tracks_to_compare = [
+            'PART DRUMS', 'PART BASS', 'PART GUITAR', 
+            'PAD VOCALS', 'PAD BASS', 'PAD DRUMS', 'PAD GUITAR', 
+            'PRO VOCALS', 'BEAT', 'EVENTS', 'SECTION'
+        ]
+    else: 
+        tracks_to_compare = [
+            'PART BASS', 'PART GUITAR', 'PART DRUMS', 'PART VOCALS', "PRO VOCALS", 
+            "PLASTIC GUITAR", "PLASTIC DRUMS", "PLASTIC BASS", 'BEAT', 'EVENTS', 'SECTION'
+        ]
 
-    all_track_names = sorted(set(tracks1.keys()) | set(tracks2.keys()))
+    all_present_track_names = sorted(list(set(tracks1.keys()) | set(tracks2.keys())))
 
-    for track_name in all_track_names:
-        if track_name not in TRACKS_TO_COMPARE: continue
+    tracks_to_actually_compare = [name for name in all_present_track_names if name in tracks_to_compare]
 
-        track1, track2 = tracks1.get(track_name), tracks2.get(track_name)
-        if not track1 and not track2: continue
+    for track_name in tracks_to_actually_compare:
+        track1 = tracks1.get(track_name)
+        track2 = tracks2.get(track_name)
         
         note_events1 = extract_note_events(track1, range(128)) if track1 else {}
         note_events2 = extract_note_events(track2, range(128)) if track2 else {}
@@ -182,8 +189,13 @@ def run_comparison(midi_file1_path, midi_file2_path, session_id, output_folder='
         text_diffs = compare_text_events(text_events1, text_events2)
 
         if note_diffs or text_diffs:
-            note_map = note_name_maps.get(track_name, {})
+            note_map_key = track_name
+            if track_name.startswith("PAD"):
+                note_map_key = track_name.replace("PAD", "PART")
+
+            note_map = note_name_maps.get(note_map_key, {})
             image_path = visualize_midi_changes(note_diffs, text_diffs, note_map, track_name, output_folder, session_id)
+            
             if image_path:
                 generated_results.append((track_name, image_path))
                 logging.info(f"Differences found in '{track_name}'. Image saved to {image_path}")
