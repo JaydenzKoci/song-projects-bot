@@ -45,45 +45,42 @@ KEY_NAME_MAP = {
     "artist": "Artist",
     "ageRating": "Age Rating",
     "bpm": "BPM",
-    "glowTimes": "Modal | Loading Phrase Glow Times",
-    "videoPosition": "Modal | Video Position",
-    "previewTime": "Audio Preview Start Time",
-    "previewEndTime": "Audio Preview End Time",
-    "previewUrl": "Audio Preview URL",
     "charter": "Charter",
+    "currentversion": "Chart Version",
+    "complete": "Progress",
     "coverArist": "Cover | Artist",
     "createdAt": "Creation Date",
     "download": "Download",
     "doubleBass": "Double Bass",
     "duration": "Duration",
+    "featured": "Updated Track",
+    "finish": "Finished Track",
     "genre": "Genre",
+    "glowTimes": "Modal Loading Phrase Glow Times",
+    "id": "Shortname",
     "is_cover": "Is Cover",
     "is_verified": "Is Verified",
     "key": "Key",
-    "loading_phrase": "Loading Phrase",
-    "newYear": "Cover | Release Year",
-    "preview_time": "Preview Start Time",
-    "preview_end_time": "Preview End Time",
-    "proVoxHarmonies": "Pro Vox Harmonies",
-    "releaseYear": "Release Year",
-    "songlink": "Song Link",
-    "spotify": "Song Link ID",
-    "source": "Source",
-    "charturl": "Chart URL",
-    "title": "Title",
-    "videoUrl": "Video URL",
-    "rotated": "WIP Track",
-    "new": "Playable Track",
-    "featured": "Updated Track",
-    "finish": "Finished Track",
-    "youtubeLinks.vocals": "Vocals Video",
-    "youtubeLinks.drums": "Drums Video",
-    "youtubeLinks.bass": "Bass Video",
-    "youtubeLinks.lead": "Lead Video",
     "lastFeatured": "Last Updated",
+    "loading_phrase": "Loading Phrase",
+    "new": "Playable Track",
+    "newYear": "Cover | Release Year",
+    "preview_end_time": "Preview End Time",
+    "preview_time": "Preview Start Time",
+    "previewEndTime": "Audio Preview End Time",
+    "previewTime": "Audio Preview Start Time",
+    "previewUrl": "Audio Preview",
+    "proVoxHarmonies": "Pro Vox Harmonies",
     "rating": "Rating",
-    "complete": "Progress",
-    "id": "Shortname",
+    "releaseYear": "Release Year",
+    "rotated": "WIP Track",
+    "songlink": "Song Link",
+    "source": "Source",
+    "spotify": "Song Link ID",
+    "title": "Title",
+    "videoPosition": "Modal Video Position",
+    "videoUrl": "Video Modal URL",
+    "videoZoom": "Video Modal Zoom",
     "difficulties.vocals": "Vocals Difficulty",
     "difficulties.lead": "Lead Difficulty",
     "difficulties.rhythm": "Rhythm Difficulty",
@@ -99,8 +96,18 @@ KEY_NAME_MAP = {
     "difficulties.real-guitar": "Real Guitar Difficulty",
     "difficulties.real-keys": "Real Keys Difficulty",
     "difficulties.real-bass": "Real Bass Difficulty",
-    "difficulties.real-drums": "Real Drums Difficulty"
+    "difficulties.real-drums": "Real Drums Difficulty",
+    "youtubeLinks.vocals": "Vocals Video",
+    "youtubeLinks.drums": "Drums Video",
+    "youtubeLinks.bass": "Bass Video",
+    "youtubeLinks.lead": "Lead Video",
+    "modalShadowColors.default.color1": "Modal Color",
+    "modalShadowColors.default.color2": "Modal Secondary Color",
+    "modalShadowColors.hover.color1": "Modal Hover Color",
+    "modalShadowColors.hover.color2": "Modal Hover Secondary Color",
 }
+
+
 intents = discord.Intents.default()
 client = discord.Client(intents=intents)
 tree = app_commands.CommandTree(client)
@@ -536,7 +543,7 @@ def create_update_log_embed(old_track: dict, new_track: dict) -> tuple[discord.E
 
         flat_old, flat_new = flatten(old_track), flatten(new_track)
         all_keys = sorted(list(set(flat_old.keys()) | set(flat_new.keys())))
-        ignored_keys = ['id', 'rotated', 'glowTimes', 'modalShadowColors', 'title', 'artist', 'cover']
+        ignored_keys = ['id', 'rotated']
 
         change_strings = []
         for key in all_keys:
@@ -544,7 +551,7 @@ def create_update_log_embed(old_track: dict, new_track: dict) -> tuple[discord.E
             
             old_val, new_val = flat_old.get(key), flat_new.get(key)
             if old_val != new_val:
-                key_title = KEY_NAME_MAP.get(key, key.replace('.', ' ').title())
+                key_title = KEY_NAME_MAP.get(key) or KEY_NAME_MAP.get(key.lower(), key.replace('.', ' ').title())
                 changes_dict[key] = {'old': old_val, 'new': new_val}
                 change_strings.append(f"**{key_title}**\n```\nOld: {old_val or 'N/A'}\nNew: {new_val or 'N/A'}\n```")
         
@@ -737,7 +744,7 @@ class HistoryPaginatorView(discord.ui.View):
                 ts = int(datetime.fromisoformat(entry['timestamp']).timestamp())
                 desc += f"**<t:{ts}:F>**\n"
                 for key, values in entry['changes'].items():
-                    key_title = KEY_NAME_MAP.get(key, key.replace('.', ' ').title())
+                    key_title = KEY_NAME_MAP.get(key) or KEY_NAME_MAP.get(key.lower(), key.replace('.', ' ').title())
                     desc += f"• **{key_title}**: `{values['old'] or 'N/A'}` → `{values['new'] or 'N/A'}`\n"
                 
                 entry_timestamp = entry['timestamp']
