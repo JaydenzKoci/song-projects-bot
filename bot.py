@@ -20,6 +20,8 @@ import requests
 import enum
 import hashlib
 import logging
+from pydub import AudioSegment
+import urllib.parse 
 
 logging.basicConfig(
     level=logging.INFO,
@@ -75,6 +77,7 @@ KEY_NAME_MAP = {
     "releaseYear": "Release Year",
     "rotated": "WIP Track",
     "songlink": "Song Link",
+    "embedColor": "Embed Color",
     "source": "Source",
     "spotify": "Song Link ID",
     "title": "Title",
@@ -136,7 +139,7 @@ def save_json_file(filename: str, data: dict | list):
 config = load_json_file(CONFIG_FILE)
 
 class Instrument:
-    def __init__(self, english:str = "Vocals", lb_code:str = "Solo_Vocals", plastic:bool = False, chopt:str = "vocals", midi:str = "PART VOCALS", replace:str = None, lb_enabled:bool = True, path_enabled: bool = True) -> None:
+    def __init__(self, english: str = "Vocals", lb_code: str = "Solo_Vocals", plastic: bool = False, chopt: str = "vocals", midi: str = "PART VOCALS", replace: str = None, lb_enabled: bool = True, path_enabled: bool = True) -> None:
         self.english = english
         self.lb_code = lb_code
         self.plastic = plastic
@@ -147,7 +150,7 @@ class Instrument:
         self.path_enabled = path_enabled
 
 class Difficulty:
-    def __init__(self, english:str = "Expert", chopt:str = "expert", pitch_ranges = [96, 100], diff_4k:bool = False) -> None:
+    def __init__(self, english: str = "Expert", chopt: str = "expert", pitch_ranges=[96, 100], diff_4k: bool = False) -> None:
         self.english = english
         self.chopt = chopt
         self.pitch_ranges = pitch_ranges
@@ -173,7 +176,7 @@ class MidiArchiveTools:
     def __init__(self) -> None:
         pass
     
-    def save_chart(self, chart_url:str, song_id: str) -> str:
+    def save_chart(self, chart_url: str, song_id: str) -> str:
         midiname = f"{song_id}.mid"
         local_path = os.path.join(LOCAL_MIDI_FOLDER, midiname)
 
@@ -370,7 +373,7 @@ def create_difficulty_bar(level: int, max_level: int = 7) -> str:
 def calculate_average_difficulty(track: dict) -> float:
     try:
         difficulties = track.get('difficulties', {})
-        valid_diffs = [d for d in difficulties.values() if isinstance(d, int) and d != -1]
+        valid_diffs = [d + 1 for d in difficulties.values() if isinstance(d, int) and d != -1]
         if not valid_diffs:
             return 0.0
         return statistics.mean(valid_diffs)
@@ -452,19 +455,19 @@ def create_track_embed_and_view(track: dict, author_id: int, is_log: bool = Fals
     try:
         embed_title = "Track Added" if is_log else None
         
-        hex_color = None
         if is_log:
             color = discord.Color.green()
         else:
-            hover_color = track.get('modalShadowColors', {}).get('hover', {}).get('color2')
-            if hover_color and isinstance(hover_color, str) and hover_color.startswith('#') and hover_color.lower() != '#ffffff':
-                hex_color = hover_color
-            else:
-                hex_color = track.get('modalShadowColors', {}).get('default', {}).get('color1')
-
+            default_colors = track.get('modalShadowColors', {}).get('default', {})
+            color_key = track.get('embedColor')
+            hex_color = default_colors.get(color_key)
+            if not hex_color:
+                hex_color = default_colors.get('color1')
             if hex_color and isinstance(hex_color, str) and hex_color.startswith('#'):
-                try: color = discord.Color.from_str(hex_color)
-                except ValueError: color = discord.Color.from_str("#FFFFFF")
+                try: 
+                    color = discord.Color.from_str(hex_color)
+                except ValueError: 
+                    color = discord.Color.from_str("#FFFFFF")
             else:
                 color = discord.Color.from_str("#FFFFFF")
 
@@ -497,7 +500,7 @@ def create_track_embed_and_view(track: dict, author_id: int, is_log: bool = Fals
                     'plastic-bass': 'Pro Bass', 'plastic-drums': 'Pro Drums',
                     'plastic-guitar': 'Pro Lead', 'plastic-keys': 'Pro Keys'}
         diff_text = "\n".join(
-            f"{name:<12}: {create_difficulty_bar(lvl)}"
+            f"{name:<12}: {create_difficulty_bar(lvl + 1)}"
             for inst, name in inst_map.items()
             if (lvl := track.get('difficulties', {}).get(inst)) is not None and lvl != -1)
         if diff_text:
@@ -595,23 +598,59 @@ class TrackInfoView(discord.ui.View):
             self.track = track
 
         async def callback(self, interaction: discord.Interaction):
+            track_id = self.track.get('id')
             if not (preview_url := self.track.get('previewUrl')):
                 await interaction.response.send_message("No audio preview URL found for this track.", ephemeral=True)
                 return
 
             await interaction.response.defer(ephemeral=True, thinking=True)
             try:
-                async with aiohttp.ClientSession() as s, s.get(preview_url) as r:
-                    if r.status != 200:
-                        await interaction.followup.send(f"Could not download audio preview (Status: {r.status}).", ephemeral=True)
-                        return
-                    
-                    audio_data = await r.read()
-                    buffer = io.BytesIO(audio_data)
-                    
-                    await interaction.followup.send(file=discord.File(buffer, "preview.mp3"), ephemeral=True)
+                preview_urls = []
+                if preview_url.startswith(('http://', 'https://')):
+                    preview_urls.append(preview_url)
+                else:
+                    preview_urls.append(urllib.parse.urljoin(ASSET_BASE_URL, preview_url))
+                if preview_url.lower().endswith('.mp3'):
+                    file_name = preview_url.split('/')[-1]
+                    preview_urls.append(urllib.parse.urljoin(ASSET_BASE_URL, f"assets/audio/{file_name}"))
+
+                async with aiohttp.ClientSession() as session:
+                    for url in preview_urls:
+                        logging.info(f"Attempting to fetch audio from: {url}")
+                        try:
+                            async with session.get(url) as response:
+                                if response.status != 200:
+                                    logging.warning(f"Failed to fetch {url}. Status: {response.status}")
+                                    continue
+                                audio_data = await response.read()
+                                audio = AudioSegment.from_file(io.BytesIO(audio_data), format="mp3")
+                                start_time = self.track.get('preview_time') or self.track.get('previewTime')
+                                end_time = self.track.get('preview_end_time') or self.track.get('previewEndTime')
+                                if start_time is not None and end_time is not None:
+                                    try:
+                                        start_ms = int(float(start_time)) 
+                                        end_ms = int(float(end_time))
+                                        if start_ms < end_ms and start_ms >= 0 and end_ms <= len(audio):
+                                            audio = audio[start_ms:end_ms]
+                                            logging.info(f"Trimmed audio from {start_ms}ms to {end_ms}ms")
+                                        else:
+                                            logging.warning(f"Invalid trim parameters: start={start_ms}, end={end_ms}, audio_length={len(audio)}")
+                                    except (ValueError, TypeError) as e:
+                                        logging.error(f"Error parsing preview times: {e}")
+                                        await log_error_to_channel(f"Error parsing preview times for track {track_id}: {e}")
+                                buffer = io.BytesIO()
+                                audio.export(buffer, format="mp3")
+                                buffer.seek(0)
+                                
+                                await interaction.followup.send(file=discord.File(buffer, f"preview.mp3"), ephemeral=True)
+                                return
+                        except Exception as e:
+                            logging.warning(f"Failed to process {url}: {e}")
+                            continue
+                
+                await interaction.followup.send(f"Could not download audio preview from any available URLs for track {track_id}.", ephemeral=True)
             except Exception as e:
-                await log_error_to_channel(f"Error fetching audio preview: {str(e)}")
+                await log_error_to_channel(f"Error fetching audio preview for track {track_id}: {str(e)}")
                 await interaction.followup.send("An error occurred while fetching the audio preview.", ephemeral=True)
 
     class PreviewVideoButton(discord.ui.Button):
@@ -621,9 +660,13 @@ class TrackInfoView(discord.ui.View):
         
         async def callback(self, interaction: discord.Interaction):
             try:
-                await interaction.response.send_message(f"Video preview:\n{ASSET_BASE_URL}/assets/preview/{self.track['videoUrl']}", ephemeral=True)
+                video_url = self.track['videoUrl']
+                if not video_url.startswith(('http://', 'https://')):
+                    video_url = urllib.parse.urljoin(ASSET_BASE_URL, f"assets/preview/{video_url}")
+                await interaction.response.send_message(f"Video preview:\n{video_url}", ephemeral=True)
             except Exception as e:
                 await log_error_to_channel(f"Error in preview video button: {str(e)}")
+                await interaction.followup.send("An error occurred while fetching the video preview.", ephemeral=True)
 
     class InstrumentVideoButton(discord.ui.Button):
         def __init__(self, part_name: str, link: str):
@@ -653,7 +696,7 @@ class TrackSelectDropdown(discord.ui.Select):
                 if ca := t.get('createdAt'): date_str = datetime.fromisoformat(ca.replace('Z', '+00:00')).strftime('%Y-%m-%d')
                 desc += f" | Added: {date_str}"
             elif sort_lower in ['charter', 'charter_za']: desc += f" | Charter: {t.get('charter', 'N/A')}"
-            elif sort_lower in ['hardest', 'easiest']: desc += f" | Avg. Diff: {round(calculate_average_difficulty(t))}/7"
+            elif sort_lower in ['hardest', 'easiest']: desc += f" | Avg. Diff: {round(calculate_average_difficulty(t))}/8"
             options.append(discord.SelectOption(label=t['title'], value=t['id'], description=desc))
 
         placeholder = f"Select from {len(self.tracks_map)} sorted results..." if sort else f"Select from {len(tracks)} results..."
@@ -901,8 +944,7 @@ async def on_ready():
         logging.info("Starting on_ready event...")
         live_tracks = await get_live_track_data()
         logging.info(f"Live tracks fetched: {len(live_tracks or [])}")
-        if live_tracks is not None:
-            save_json_file(TRACK_CACHE_FILE, {"tracks": live_tracks})
+        save_json_file(TRACK_CACHE_FILE, {"tracks": live_tracks if live_tracks is not None else []})
         
         logging.info(f"Bot logged in as {client.user} (ID: {client.user.id})")
         logging.info(f"Found {len(client.guilds)} guilds: {[guild.name + ' (' + str(guild.id) + ')' for guild in client.guilds]}")
