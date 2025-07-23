@@ -176,23 +176,24 @@ class MidiArchiveTools:
     def __init__(self) -> None:
         pass
     
-    def save_chart(self, chart_url: str, song_id: str) -> str:
-        midiname = f"{song_id}.mid"
-        local_path = os.path.join(LOCAL_MIDI_FOLDER, midiname)
-
+    def save_chart(self, chart_url:str, filename: str) -> str | None:
+        local_path = os.path.join(LOCAL_MIDI_FOLDER, filename)
         if os.path.exists(local_path):
-            logging.info(f"Chart for song ID '{song_id}' already exists, using local copy.")
+            logging.info(f"Chart '{filename}' already exists in cache, using local copy.")
             return local_path
-        else:
-            logging.info(f"Downloading chart for song ID '{song_id}' from {chart_url}")
+        
+        logging.info(f"Downloading chart '{filename}' from {chart_url}")
+        try:
             response = requests.get(chart_url)
             response.raise_for_status()
 
             with open(local_path, 'wb') as f:
                 f.write(response.content)
-            
-            logging.info(f"Successfully saved chart for '{song_id}' to {local_path}")
+            logging.info(f"Successfully saved chart '{filename}' to {local_path}")
             return local_path
+        except requests.exceptions.RequestException as e:
+            logging.error(f"Failed to download chart from {chart_url}: {e}")
+            return None
         
     def modify_midi_file(self, midi_file: str, instrument: Instrument, session_hash: str, shortname: str) -> str:
         mid = mido.MidiFile(midi_file)
@@ -865,10 +866,16 @@ async def check_for_updates():
                     await channel.send(embed=embed)
                     history_data.setdefault(mod_info['new']['id'], []).insert(0, {'timestamp': current_update_timestamp, 'changes': changes})
 
-                old_url = mod_info['old'].get('charturl')
-                new_url = mod_info['new'].get('charturl')
-                if old_url and new_url and old_url != new_url:
-                    logging.info(f"Chart URL changed for {mod_info['new']['id']}. Comparing MIDI files.")
+                old_version = mod_info['old'].get('currentversion', 1)
+                new_version = mod_info['new'].get('currentversion', 1)
+
+                if new_version > old_version:
+                    shortname = mod_info['new']['id']
+                    logging.info(f"Chart version changed for {shortname} from v{old_version} to v{new_version}. Comparing MIDI files.")
+                    
+                    old_url = f"{ASSET_BASE_URL}assets/midis/{shortname}-v{old_version}.mid"
+                    new_url = f"{ASSET_BASE_URL}assets/midis/{shortname}-v{new_version}.mid"
+                    
                     session_id = str(uuid.uuid4())
                     temp_dir = 'temp_midi'
                     os.makedirs(temp_dir, exist_ok=True)
@@ -883,11 +890,11 @@ async def check_for_updates():
                                         f1.write(await r1.read())
                                         f2.write(await r2.read())
                                     
-                                    format = mod_info['new'].get('format', 'json')
+                                    chart_format = mod_info['new'].get('format', 'json')
                                     comparison_results = compare_midi.run_comparison(
                                         old_path, new_path, session_id, 
                                         output_folder=temp_dir, 
-                                        format=format
+                                        format=chart_format
                                     )
                                     midi_change_log_entry = []
                                     for comp_track_name, image_path in comparison_results:
@@ -895,7 +902,7 @@ async def check_for_updates():
                                         previous_chart_change_ts = mod_info['new'].get('createdAt')
                                         if mod_info['new']['id'] in history_data:
                                             for past_change in history_data[mod_info['new']['id']][1:]: # Skip the current change
-                                                if 'charturl' in past_change['changes']:
+                                                if 'currentversion' in past_change['changes']:
                                                     previous_chart_change_ts = past_change['timestamp']
                                                     break
                                         
@@ -925,8 +932,10 @@ async def check_for_updates():
                                     
                                     if midi_change_log_entry:
                                         midi_changes_data[current_update_timestamp] = midi_change_log_entry
+                                else:
+                                    logging.error(f"Failed to download MIDI for comparison. Old URL status: {r1.status}, New URL status: {r2.status}")
                     except Exception as e:
-                        await log_error_to_channel(f"MIDI comparison failed for {mod_info['new']['id']}: {e}")
+                        await log_error_to_channel(f"MIDI comparison failed for {shortname}: {e}")
                     finally:
                         if os.path.exists(old_path): os.remove(old_path)
                         if os.path.exists(new_path): os.remove(new_path)
@@ -1008,14 +1017,16 @@ async def generate_path_response(user_id: int, song_data: dict, instrument: Inst
         field_argument_descriptors.append('**No Time Signatures:** Yes')
 
     session_hash = generate_session_hash(user_id, song_data['id'])
+    
+    shortname = song_data['id']
+    version = song_data.get('currentversion', 1)
+    chart_filename = f"{shortname}-v{version}.mid"
+    chart_url = f"{ASSET_BASE_URL}/assets/midis/{chart_filename}"
 
     try:
-        chart_url = song_data.get('charturl')
-        if not chart_url:
-            error_msg = "This track does not have a chart URL."
-            return (error_msg, None, None, error_msg)
-
-        midi_file = midi_tool.save_chart(chart_url, song_data['id'])
+        midi_file = midi_tool.save_chart(chart_url, chart_filename)
+        if not midi_file:
+            return (f"Could not download the chart file. Please check that version `{version}` exists for this track.", None, None, "Chart download failed")
 
         if chosen_instrument.replace:
             modified_midi_file = midi_tool.modify_midi_file(midi_file, chosen_instrument, session_hash, song_data['id'])
